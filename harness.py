@@ -1,7 +1,7 @@
 import modal
 import uuid
 from dataclasses import dataclass, field
-from agents import Agent, Runner
+from agents import Agent, Runner, Session
 from agents.items import TResponseInputItem
 
 app = modal.App("evals-workshop")
@@ -16,7 +16,7 @@ secrets=[modal.Secret.from_name("llm-secrets")]
 # Create a Modal Dict for persisting chat session history
 sessions = modal.Dict.from_name("evals-workshop-sessions", create_if_missing=True)
 
-class ModalDictSession:
+class ModalDictSession(Session):
     session_settings = None
 
     def __init__(self, session_id: str):
