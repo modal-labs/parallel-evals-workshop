@@ -16,6 +16,7 @@ secrets=[modal.Secret.from_name("llm-secrets")]
 # Create a Modal Dict for persisting chat session history
 sessions = modal.Dict.from_name("evals-workshop-sessions", create_if_missing=True)
 
+# Extend Session to back it with the Modal Dict
 class ModalDictSession(Session):
     session_settings = None
 
