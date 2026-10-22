@@ -1,13 +1,18 @@
 import modal
 import uuid
+from agents import Agent, Runner
 
 app = modal.App("evals-workshop")
 
-# All sandboxes start on debian slim
+harness_image = modal.Image.debian_slim().uv_pip_install("openai-agents")
 sandbox_image = modal.Image.debian_slim()
 
+# Set Modal Secrets with:
+# modal secret create --from-dotenv .env llm-secrets
+secrets=[modal.Secret.from_name("llm-secrets")]
+
 # A parameterized Cls with max_containers=1 gives us a globally unique harness in a container
-@app.cls(max_containers=1)
+@app.cls(max_containers=1, secrets=secrets, image=harness_image)
 class Harness:
     # Parameters create distinct autoscaling groups
     id: str = modal.parameter()
@@ -23,6 +28,10 @@ class Harness:
             image=sandbox_image,
             timeout=600,
         )
+
+        self.agent = Agent(name="Assistant", instructions="You are a helpful assistant")
+
+
         self.log(f"Created sandbox {self.sandbox.object_id}")
 
     @modal.exit()
@@ -37,7 +46,8 @@ class Harness:
 
     @modal.method()
     def chat(self, prompt):
-        self.log(prompt)
+        result = Runner.run_sync(self.agent, prompt)
+        self.log(result.final_output)
 
     # --------------------------
     # Helpers
@@ -53,5 +63,5 @@ def main():
     id = new_id()
     harness = Harness(id=id)
 
-    prompt = "hello"
+    prompt = "Write a haiku about programming"
     harness.chat.remote(prompt)
