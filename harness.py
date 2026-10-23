@@ -97,6 +97,31 @@ class Harness:
     # --------------------------
     # Custom interfaces we expose
 
+    async def prepare_task(self, task_name: str):
+        # TODO: self.task = await tasks.prepare(task_name)
+        # TODO: Build the image and create self.sandbox from the task specification.
+        # TODO: Move task sandbox creation out of init() above.
+        raise NotImplementedError("Task preparation is not implemented yet")
+
+    async def solve_task(self, config: EvalRunConfig):
+        # TODO: Run the existing SDK agent using self.task.instruction and config.
+        # TODO: Bind the bash tool to self.sandbox.
+        raise NotImplementedError("Task solving is not implemented yet")
+
+    async def score_task(self):
+        # TODO: Upload verifier files, execute the verifier, and read its reward file.
+        # TODO: return tasks.parse_reward(reward_contents)
+        raise NotImplementedError("Task scoring is not implemented yet")
+
+    @modal.method()
+    async def run_task(self, task_name: str, config: EvalRunConfig):
+        await self.prepare_task(task_name)
+        try:
+            await self.solve_task(config)
+            return await self.score_task()
+        finally:
+            self.sandbox.terminate()
+
     @modal.method()
     async def chat(self, prompt: str, config: EvalRunConfig):
         async with AsyncOpenAI(
