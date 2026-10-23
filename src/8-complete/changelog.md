@@ -1,4 +1,4 @@
 - Use Harbor to download Terminal-Bench tasks into gitignored `_tasks/`.
 - Load handwritten and downloaded tasks through the same pipeline.
-- Bundle full build contexts; upload test files only when scoring.
+- Bundle full build contexts.
 - Skip multi-step tasks and separate verifier environments.
