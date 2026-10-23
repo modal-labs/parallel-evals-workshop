@@ -2,6 +2,7 @@ import asyncio
 import os
 import uuid
 from dataclasses import dataclass
+from time import perf_counter
 
 import modal
 from agents import (
@@ -52,21 +53,33 @@ async def main():
             calls.append((task.name, config, call))
 
     # Collect results
-    scores = {task.name: [] for task in tasks}
+    results = {task.name: [] for task in tasks}
     for task_name, config, call in calls:
-        score = await call.get.aio()
-        scores[task_name].append(score)
-        print(f"[{task_name}] [{config.model_name}] {score}")
+        result = await call.get.aio()
+        results[task_name].append(result)
+        print(f"[{task_name}] [{config.model_name}] {result}")
 
-    generate_report(scores, [config.model_name for config in MODELS])
+    generate_report(results, [config.model_name for config in MODELS])
 
 
 @app.function(secrets=secrets, image=harness_image, timeout=3600)
 async def run_task(task: Task, config: ModelConfig):
     sandbox = await prepare_task(task, app)
     try:
-        await solve_task(task, sandbox, config)
-        return await score_task(task, sandbox)
+        started = perf_counter()
+        usage = await solve_task(task, sandbox, config)
+        seconds = perf_counter() - started
+        cost = None
+        if config.token_prices is not None:
+            input_price, output_price = config.token_prices
+            cost = (usage.input_tokens * input_price + usage.output_tokens * output_price) / 1_000_000
+        return {
+            "score": await score_task(task, sandbox),
+            "seconds": seconds,
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "estimated_cost_usd": cost,
+        }
     finally:
         await sandbox.terminate.aio()
 
@@ -93,7 +106,7 @@ async def solve_task(task: Task, sandbox: modal.Sandbox, config: ModelConfig):
             run_config=RunConfig(model=model),
             max_turns=None,
         )
-    return result.final_output
+    return result.context_wrapper.usage
 
 
 @function_tool
