@@ -1,8 +1,12 @@
 import modal
+import os
 import uuid
-from dataclasses import dataclass, field
-from agents import Agent, Runner, Session
+from dataclasses import dataclass
+from agents import Agent, OpenAIChatCompletionsModel, RunConfig, Runner, Session
 from agents.items import TResponseInputItem
+from openai import AsyncOpenAI
+
+
 
 app = modal.App("evals-workshop")
 
@@ -45,6 +49,25 @@ class ModalDictSession(Session):
     async def clear_session(self) -> None:
         await sessions.pop.aio(self.session_id, None)
 
+@dataclass(frozen=True)
+class EvalRunConfig:
+    model_name: str
+    base_url: str
+    api_key_env: str
+
+providers = [
+    EvalRunConfig(
+        model_name="gpt-4.1-mini",
+        base_url="https://api.openai.com/v1",
+        api_key_env="OPENAI_API_KEY",
+    ),
+    EvalRunConfig(
+        model_name="moonshotai/Kimi-K3",
+        base_url="https://modal-labs--ep-kimi-k3-internal-use-server.us-west.modal.direct/v1",
+        api_key_env="KIMI_API_KEY",
+    ),
+]
+
 # A parameterized Cls with max_containers=1 gives us a globally unique harness in a container
 @app.cls(max_containers=1, secrets=secrets, image=harness_image)
 class Harness:
@@ -66,38 +89,63 @@ class Harness:
         self.agent = Agent(name="Assistant", instructions="You are a helpful assistant")
         self.session = ModalDictSession(self.id)
 
-
-        self.log(f"Created sandbox {self.sandbox.object_id}")
-
     @modal.exit()
     def exit(self):
         # Clean up sandbox
         self.sandbox.terminate()
-        self.log(f"Terminated sandbox {self.sandbox.object_id}")
-
 
     # --------------------------
     # Custom interfaces we expose
 
     @modal.method()
-    def chat(self, prompt):
-        result = Runner.run_sync(self.agent, prompt, session=self.session)
-        self.log(result.final_output)
+    async def chat(self, prompt: str, config: EvalRunConfig):
+        async with AsyncOpenAI(
+            base_url=config.base_url,
+            api_key=os.environ[config.api_key_env],
+        ) as client:
+            # Target model specified by EvalRunConfig
+            model = OpenAIChatCompletionsModel(
+                model=config.model_name,
+                openai_client=client,
+            )
 
-    # --------------------------
-    # Helpers
+            # Run agent loop using Dict-bac
+            result = await Runner.run(
+                self.agent,
+                prompt,
+                session=self.session, # Pass in Dict-backed session
+                run_config=RunConfig(model=model), # Pass in target endpoint
+            )
+        return(result.final_output)
 
-    def log(self, *args, **kwargs):
-        print(f"[{self.id}]", *args, **kwargs)
 
 def new_id():
     return str(uuid.uuid4())
 
+
+# Run a stateful chat targeting an ID
 @app.local_entrypoint()
-def main(id: str | None = None, prompt="Write a haiku about programming"):
-    if not id:
-        id = new_id()
-
+def chat(
+    id: str,
+    prompt: str = "Write a haiku about programming",
+):
     harness = Harness(id=id)
+    response = harness.chat.remote(prompt, providers[0])
+    print(response)
 
-    harness.chat.remote(prompt)
+# Run an ephemeral sweep of all providers
+@app.local_entrypoint()
+def run_all():
+    prompt = "Write a haiku about programming"
+    calls = []
+
+    # Spawn parallel runs per config
+    for config in providers:
+        id = new_id()
+        harness = Harness(id=id)
+        calls.append((config, harness.chat.spawn(prompt, config)))
+
+    # Collect results
+    for config, call in calls:
+        response = call.get()
+        print(f"[{config.model_name}] {response}")
