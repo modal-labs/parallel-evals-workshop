@@ -1,8 +1,0 @@
-schema_version = "1.4"
-
-[agent]
-timeout_sec = 60
-
-[verifier]
-timeout_sec = 10
-environment_mode = "shared"

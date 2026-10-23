@@ -1,12 +1,10 @@
 import modal
 import asyncio
-import math
 import os
 import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from modal.exception import SandboxFilesystemNotFoundError
 from agents import (
     Agent,
     ModelSettings,
@@ -18,12 +16,12 @@ from agents import (
 )
 from openai import AsyncOpenAI
 
-import tasks
+from tasks import Task, load_tasks
 app = modal.App("evals-workshop")
 
 harness_image = (
     modal.Image.debian_slim()
-    .uv_pip_install("openai-agents", "harbor==0.24.0")
+    .uv_pip_install("openai-agents")
     .add_local_python_source("tasks")
 )
 
@@ -60,7 +58,7 @@ providers = [
 @function_tool
 def update_status(ctx: RunContextWrapper[RunContext], status: str):
     """Report a simple one-sentence status back to the user as you work"""
-    print(f"{ctx.context.model_name}\t{ctx.context.task_name}\tstatus")
+    print(f"{ctx.context.model_name}\t{ctx.context.task_name}\t{status}")
 
 
 @function_tool
@@ -96,23 +94,18 @@ async def bash(ctx: RunContextWrapper[RunContext], command: str) -> dict:
         "exit_code": exit_code,
     }
 
-async def create_sandbox(env: tasks.Environment, timeout: int = 600):
-    if env.config.get("docker_image"):
-        image = modal.Image.from_registry(env.config["docker_image"])
-    else:
-        image = modal.Image.from_dockerfile(
-            env.dockerfile,
-            context_dir=env.context_dir,
+async def prepare_task(task: Task):
+    with tempfile.TemporaryDirectory() as directory:
+        dockerfile = Path(directory) / "Dockerfile"
+        dockerfile.write_text(task.dockerfile)
+        image = modal.Image.from_dockerfile(dockerfile, context_dir=directory)
+        return await modal.Sandbox.create.aio(
+            app=app,
+            image=image,
+            timeout=600,
         )
 
-    return await modal.Sandbox.create.aio(
-        app=app,
-        image=image,
-        timeout=timeout,
-        workdir=env.config.get("workdir"),
-    )
-
-async def solve_task(task: tasks.PreparedTask, sandbox: modal.Sandbox, config: EvalRunConfig):
+async def solve_task(task: Task, sandbox: modal.Sandbox, config: EvalRunConfig):
     agent = Agent[RunContext](
         name="Assistant",
         instructions="You are a helpful assistant. Use bash to work on your machine until the task is complete. Do not exit until complete.",
@@ -137,87 +130,16 @@ async def solve_task(task: tasks.PreparedTask, sandbox: modal.Sandbox, config: E
     return result.final_output
 
 
-async def copy_artifacts(source: modal.Sandbox, target: modal.Sandbox, paths: list[str]):
-    existing_paths = []
-    for path in paths:
-        try:
-            await source.filesystem.stat.aio(path)
-        except SandboxFilesystemNotFoundError:
-            continue
-        existing_paths.append(path.lstrip("/"))
-    if not existing_paths:
-        return
-
-    archive = "/tmp/eval-artifacts.tar"
-    process = await source.exec.aio("tar", "-cf", archive, "-C", "/", *existing_paths)
-    stderr = await process.stderr.read.aio()
-    if await process.wait.aio() != 0:
-        raise RuntimeError(f"Artifact collection failed: {stderr}")
-
-    with tempfile.TemporaryDirectory() as directory:
-        local_archive = Path(directory) / "artifacts.tar"
-        await source.filesystem.copy_to_local.aio(archive, local_archive)
-        await target.filesystem.copy_from_local.aio(local_archive, archive)
-
-    process = await target.exec.aio("tar", "-xf", archive, "-C", "/")
-    stderr = await process.stderr.read.aio()
-    if await process.wait.aio() != 0:
-        raise RuntimeError(f"Artifact restoration failed: {stderr}")
-
-
-async def score_task(task: tasks.PreparedTask, sandbox: modal.Sandbox):
-    verifier = task.verifier
-    timeout = math.ceil(verifier.config.get("timeout_sec", 600))
-    grading_sandbox = sandbox
-    if verifier.environment is not None:
-        grading_sandbox = await create_sandbox(verifier.environment, timeout=timeout + 60)
-
-    try:
-        if grading_sandbox is not sandbox:
-            await copy_artifacts(sandbox, grading_sandbox, verifier.artifacts)
-
-        # Separate verifier images already contain their /tests directory.
-        if verifier.environment is None or verifier.environment.context_dir == task.environment.context_dir:
-            for path in verifier.tests_dir.rglob("*"):
-                if path.is_file():
-                    destination = "/tests/" + path.relative_to(verifier.tests_dir).as_posix()
-                    await grading_sandbox.filesystem.copy_from_local.aio(path, destination)
-
-        await grading_sandbox.filesystem.make_directory.aio("/logs/verifier")
-        for filename in ("reward.json", "reward.txt"):
-            try:
-                await grading_sandbox.filesystem.remove.aio(f"/logs/verifier/{filename}")
-            except SandboxFilesystemNotFoundError:
-                pass
-
-        process = await grading_sandbox.exec.aio(
-            "bash", "/tests/test.sh",
-            env=verifier.config.get("env", {}),
-            timeout=timeout,
-        )
-        stdout, stderr = await asyncio.gather(
-            process.stdout.read.aio(),
-            process.stderr.read.aio(),
-        )
-        exit_code = await process.wait.aio()
-
-        # A failed test may exit nonzero and still write a valid zero reward.
-        for filename in ("reward.json", "reward.txt"):
-            try:
-                contents = await grading_sandbox.filesystem.read_text.aio(f"/logs/verifier/{filename}")
-            except SandboxFilesystemNotFoundError:
-                continue
-            return tasks.parse_reward(contents)
-        raise RuntimeError(f"Verifier produced no reward (exit {exit_code}):\n{stdout}\n{stderr}")
-    finally:
-        if grading_sandbox is not sandbox:
-            await grading_sandbox.terminate.aio()
+async def score_task(task: Task, sandbox: modal.Sandbox):
+    await sandbox.filesystem.write_text.aio(task.test_script, "/tmp/score.sh")
+    process = await sandbox.exec.aio("bash", "/tmp/score.sh", timeout=60)
+    await process.wait.aio()
+    return float(await sandbox.filesystem.read_text.aio("/logs/verifier/reward.txt"))
 
 
 @app.function(secrets=secrets, image=harness_image, timeout=3600)
-async def run_task(task_name: str, config: EvalRunConfig):
-    task = await tasks.prepare(task_name)
-    sandbox = await create_sandbox(task.environment)
+async def run_task(task: Task, config: EvalRunConfig):
+    sandbox = await prepare_task(task)
     try:
         await solve_task(task, sandbox, config)
         return await score_task(task, sandbox)
@@ -227,40 +149,45 @@ async def run_task(task_name: str, config: EvalRunConfig):
 # Run an ephemeral sweep of every task and provider
 @app.local_entrypoint()
 async def main():
-    import matplotlib.pyplot as plt
-
-    task_names = await tasks.list_tasks()
+    tasks = load_tasks()
     calls = []
 
-    # trim down for dev
-    task_names = task_names[0:1]
-
     # Spawn every task/model pair before collecting results
-    for task_name in task_names:
+    for task in tasks:
         for config in providers:
-            call = await run_task.spawn.aio(task_name, config)
-            calls.append((task_name, config, call))
+            call = await run_task.spawn.aio(task, config)
+            calls.append((task.name, config, call))
 
     # Collect results
-    scores = {name: [] for name in task_names}
+    scores = {task.name: [] for task in tasks}
     for task_name, config, call in calls:
         response = await call.get.aio()
         scores[task_name].append(response)
         print(f"[{task_name}] [{config.model_name}] {response}")
 
-    if not scores:
-        return
-    averages = [f"{sum(column) / len(column):.2f}" for column in zip(*scores.values())]
-    fig, ax = plt.subplots(figsize=(3 * len(providers), 0.4 * len(scores) + 2))
-    ax.axis("off")
-    table = ax.table(
-        cellText=[averages, *scores.values()],
-        rowLabels=["Average", *scores],
-        colLabels=[config.model_name for config in providers],
-        loc="center",
+    plot_scores(scores)
+
+
+def plot_scores(scores: dict[str, list[float]]):
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    sns.set_theme(style="white", font_scale=1.05)
+    averages = [sum(column) / len(column) for column in zip(*scores.values())]
+    fig, ax = plt.subplots(figsize=(max(6, 3 * len(providers)), 0.5 * len(scores) + 2.5))
+    sns.heatmap(
+        [averages, *scores.values()],
+        annot=True, fmt=".2f", cmap="crest", vmin=0, vmax=1,
+        linewidths=2, linecolor="white",
+        xticklabels=[config.model_name.rsplit("/", 1)[-1] for config in providers],
+        yticklabels=["Average", *scores],
+        cbar_kws={"label": "Score", "ticks": [0, 0.5, 1]}, ax=ax,
     )
-    table.auto_set_font_size(False)
-    table.set_fontsize(10)
-    fig.savefig("report.png", bbox_inches="tight", dpi=150)
+    ax.set_title("Agent evaluation scores", loc="left", weight="bold", pad=20)
+    ax.xaxis.tick_top()
+    ax.tick_params(axis="both", length=0, labelrotation=0)
+    ax.get_yticklabels()[0].set_fontweight("bold")
+    ax.axhline(1, color="white", linewidth=5)
+    fig.savefig("report.png", bbox_inches="tight", dpi=180)
     plt.close(fig)
     print("Saved report.png")
