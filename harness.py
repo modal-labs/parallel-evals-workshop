@@ -31,11 +31,18 @@ harness_image = (
 # modal secret create --from-dotenv .env llm-secrets
 secrets=[modal.Secret.from_name("llm-secrets")]
 
-@dataclass(frozen=True)
+@dataclass
 class EvalRunConfig:
     model_name: str
     base_url: str
     api_key_env: str
+
+# State passed into each tool
+@dataclass
+class RunContext:
+    sandbox: modal.Sandbox
+    model_name: str
+    task_name: str
 
 providers = [
     EvalRunConfig(
@@ -51,18 +58,17 @@ providers = [
 ]
 
 @function_tool
-def update_status(status: str):
+def update_status(ctx: RunContextWrapper[RunContext], status: str):
     """Report a simple one-sentence status back to the user as you work"""
-    print(status)
+    print(f"{ctx.context.model_name}\t{ctx.context.task_name}\tstatus")
 
 
 @function_tool
-async def bash(context: RunContextWrapper[modal.Sandbox], command: str) -> dict:
+async def bash(ctx: RunContextWrapper[RunContext], command: str) -> dict:
     """Run a bash command in the sandbox and return stdout, stderr, and exit code.
     Files persist between calls, but each call starts a new shell.
     """
-    print(f"CMD: {command}")
-    sandbox = context.context
+    sandbox = ctx.context.sandbox
     process = await sandbox.exec.aio("bash", "-c", command, timeout=60)
     stdout, stderr = await asyncio.gather(
         process.stdout.read.aio(),
@@ -90,9 +96,6 @@ async def bash(context: RunContextWrapper[modal.Sandbox], command: str) -> dict:
         "exit_code": exit_code,
     }
 
-
-
-
 async def create_sandbox(env: tasks.Environment, timeout: int = 600):
     if env.config.get("docker_image"):
         image = modal.Image.from_registry(env.config["docker_image"])
@@ -109,12 +112,11 @@ async def create_sandbox(env: tasks.Environment, timeout: int = 600):
         workdir=env.config.get("workdir"),
     )
 
-
 async def solve_task(task: tasks.PreparedTask, sandbox: modal.Sandbox, config: EvalRunConfig):
-    agent = Agent[modal.Sandbox](
+    agent = Agent[RunContext](
         name="Assistant",
         instructions="You are a helpful assistant. Use bash to work on your machine until the task is complete. Do not exit until complete.",
-        tools=[bash],
+        tools=[bash, update_status],
         model_settings=ModelSettings(parallel_tool_calls=False),
     )
     async with AsyncOpenAI(
@@ -128,7 +130,7 @@ async def solve_task(task: tasks.PreparedTask, sandbox: modal.Sandbox, config: E
         result = await Runner.run(
             agent,
             task.instruction,
-            context=sandbox,
+            context=RunContext(sandbox=sandbox, task_name=task.name, model_name=config.model_name),
             run_config=RunConfig(model=model),
             max_turns=None,
         )
@@ -225,6 +227,8 @@ async def run_task(task_name: str, config: EvalRunConfig):
 # Run an ephemeral sweep of every task and provider
 @app.local_entrypoint()
 async def main():
+    import matplotlib.pyplot as plt
+
     task_names = await tasks.list_tasks()
     calls = []
 
@@ -238,6 +242,25 @@ async def main():
             calls.append((task_name, config, call))
 
     # Collect results
+    scores = {name: [] for name in task_names}
     for task_name, config, call in calls:
         response = await call.get.aio()
+        scores[task_name].append(response)
         print(f"[{task_name}] [{config.model_name}] {response}")
+
+    if not scores:
+        return
+    averages = [f"{sum(column) / len(column):.2f}" for column in zip(*scores.values())]
+    fig, ax = plt.subplots(figsize=(3 * len(providers), 0.4 * len(scores) + 2))
+    ax.axis("off")
+    table = ax.table(
+        cellText=[averages, *scores.values()],
+        rowLabels=["Average", *scores],
+        colLabels=[config.model_name for config in providers],
+        loc="center",
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(10)
+    fig.savefig("report.png", bbox_inches="tight", dpi=150)
+    plt.close(fig)
+    print("Saved report.png")
