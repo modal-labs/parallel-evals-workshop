@@ -11,3 +11,6 @@ wheels/
 
 # Env
 .env
+
+# Generated report
+report.png
