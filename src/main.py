@@ -62,17 +62,22 @@ async def main():
     generate_report(results, [config.model_name for config in MODELS])
 
 
-@app.function(secrets=secrets, image=harness_image, timeout=3600)
+@app.function(secrets=secrets, image=harness_image, timeout=3600, scaledown_window=5)
 async def run_task(task: Task, config: ModelConfig):
+    # Boot sandbox for task
     sandbox = await prepare_task(task, app)
     try:
+        # Time agent completion
         started = perf_counter()
         usage = await solve_task(task, sandbox, config)
         seconds = perf_counter() - started
+
+        # Calculate cost
         cost = None
         if config.token_prices is not None:
             input_price, output_price = config.token_prices
             cost = (usage.input_tokens * input_price + usage.output_tokens * output_price) / 1_000_000
+
         return {
             "score": await score_task(task, sandbox),
             "seconds": seconds,
@@ -120,6 +125,7 @@ async def bash(ctx: RunContextWrapper[RunContext], command: str) -> dict:
     """Run a bash command in the sandbox and return stdout, stderr, and exit code.
     Files persist between calls, but each call starts a new shell.
     """
+    print(command)
     sandbox = ctx.context.sandbox
     process = await sandbox.exec.aio("bash", "-c", command, timeout=60)
     stdout, stderr = await asyncio.gather(

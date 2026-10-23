@@ -14,3 +14,6 @@ wheels/
 
 # Generated report
 report.png
+
+# Downloaded tasks
+/src/_tasks/
