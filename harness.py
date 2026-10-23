@@ -10,10 +10,8 @@ from agents import (
     RunConfig,
     RunContextWrapper,
     Runner,
-    Session,
     function_tool,
 )
-from agents.items import TResponseInputItem
 from openai import AsyncOpenAI
 
 
@@ -21,44 +19,10 @@ from openai import AsyncOpenAI
 app = modal.App("evals-workshop")
 
 harness_image = modal.Image.debian_slim().uv_pip_install("openai-agents")
-sandbox_base_image = modal.Image.debian_slim()
 
 # Set Modal Secrets with:
 # modal secret create --from-dotenv .env llm-secrets
 secrets=[modal.Secret.from_name("llm-secrets")]
-
-# Create a Modal Dict for persisting chat session history and sandbox exit snapshots
-sessions = modal.Dict.from_name("evals-workshop-sessions", create_if_missing=True)
-snapshots = modal.Dict.from_name("evals-workshop-snapshots", create_if_missing=True)
-
-# Extend Session to back it with the Modal Dict
-class ModalDictSession(Session):
-    session_settings = None
-
-    def __init__(self, session_id: str):
-        self.session_id = session_id
-
-    async def get_items(self, limit: int | None = None) -> list[TResponseInputItem]:
-        items = await sessions.get.aio(self.session_id, [])
-        if limit is None:
-            return items
-        return items[-limit:] if limit > 0 else []
-
-    async def add_items(self, items: list[TResponseInputItem]) -> None:
-        items_ = await sessions.get.aio(self.session_id, [])
-        items_.extend(items)
-        await sessions.put.aio(self.session_id, items_)
-
-    async def pop_item(self) -> TResponseInputItem | None:
-        items = await sessions.get.aio(self.session_id, [])
-        if not items:
-            return None
-        item = items.pop()
-        await sessions.put.aio(self.session_id, items)
-        return item
-
-    async def clear_session(self) -> None:
-        await sessions.pop.aio(self.session_id, None)
 
 @dataclass(frozen=True)
 class EvalRunConfig:
@@ -80,7 +44,7 @@ providers = [
 ]
 
 
-# A parameterized Cls with max_containers=1 gives us a globally unique harness in a container
+# Each trial ID gets its own harness container.
 @app.cls(max_containers=1, secrets=secrets, image=harness_image)
 class Harness:
     # Parameters create distinct autoscaling groups
@@ -91,26 +55,15 @@ class Harness:
 
     @modal.enter()
     def init(self):
-        # Each Harness owns a sandbox
-        image = snapshots.get(self.id, sandbox_base_image)
-        self.sandbox = modal.Sandbox.create(
-            app=app,
-            image=image,
-            timeout=600,
-        )
-
+        self.sandbox = None
         self.init_agent()
-        self.session = ModalDictSession(self.id)
 
     @modal.exit()
     def exit(self):
-        # snapshot sandbox and terminate
-        if self.sandbox is None:
-            return
-        try:
-            # save as image to snapshots dict
-            snapshots[self.id] = self.sandbox.snapshot_filesystem(timeout=20)
-        finally:
+        self.terminate_sandbox()
+
+    def terminate_sandbox(self):
+        if self.sandbox is not None:
             self.sandbox.terminate()
             self.sandbox = None
 
@@ -146,30 +99,9 @@ class Harness:
     async def prepare_task(self, task_name: str):
         # TODO: self.task = await tasks.prepare(task_name)
         # TODO: Build the image and create self.sandbox from the task specification.
-        # TODO: Move task sandbox creation out of init() above.
         raise NotImplementedError("Task preparation is not implemented yet")
 
     async def solve_task(self, config: EvalRunConfig):
-        # TODO: Run the existing SDK agent using self.task.instruction and config.
-        # TODO: Bind the bash tool to self.sandbox.
-        raise NotImplementedError("Task solving is not implemented yet")
-
-    async def score_task(self):
-        # TODO: Upload verifier files, execute the verifier, and read its reward file.
-        # TODO: return tasks.parse_reward(reward_contents)
-        raise NotImplementedError("Task scoring is not implemented yet")
-
-    @modal.method()
-    async def run_task(self, task_name: str, config: EvalRunConfig):
-        await self.prepare_task(task_name)
-        try:
-            await self.solve_task(config)
-            return await self.score_task()
-        finally:
-            self.snapshot_and_terminate()
-
-    @modal.method()
-    async def chat(self, prompt: str, config: EvalRunConfig):
         async with AsyncOpenAI(
             base_url=config.base_url,
             api_key=os.environ[config.api_key_env],
@@ -180,42 +112,49 @@ class Harness:
                 openai_client=client,
             )
 
-            # Run agent loop using Dict-backed session
+            # The SDK keeps conversation history within this trial's agent loop.
             result = await Runner.run(
                 self.agent,
-                prompt,
+                self.task.instruction,
                 context=self, # Tools receive this harness through RunContextWrapper
-                session=self.session, # Pass in Dict-backed session
                 run_config=RunConfig(model=model), # Pass in target endpoint
             )
         return(result.final_output)
 
+    async def score_task(self):
+        # TODO: Upload verifier files, execute the verifier, and read its reward file.
+        # TODO: return tasks.parse_reward(reward_contents)
+        raise NotImplementedError("Task scoring is not implemented yet")
+
+    @modal.method()
+    async def run_task(self, task_name: str, config: EvalRunConfig):
+        try:
+            await self.prepare_task(task_name)
+            await self.solve_task(config)
+            return await self.score_task()
+        finally:
+            self.terminate_sandbox()
+
 def new_id():
     return str(uuid.uuid4())
 
-# Run a stateful chat targeting an ID
+# Run an ephemeral sweep of every task and provider
 @app.local_entrypoint()
-def chat(
-    id: str,
-    prompt: str = "Write a haiku about programming",
-):
-    harness = Harness(id=id)
-    response = harness.chat.remote(prompt, providers[0])
-    print(response)
+async def main():
+    from tasks import list_tasks
 
-# Run an ephemeral sweep of all providers
-@app.local_entrypoint()
-def run_all():
-    prompt = "Write a haiku about programming"
+    task_names = await list_tasks()
     calls = []
 
-    # Spawn parallel runs per config
-    for config in providers:
-        id = new_id()
-        harness = Harness(id=id)
-        calls.append((config, harness.chat.spawn(prompt, config)))
+    # Spawn every task/model pair before collecting results
+    for task_name in task_names:
+        for config in providers:
+            id = new_id()
+            harness = Harness(id=id)
+            call = await harness.run_task.spawn.aio(task_name, config)
+            calls.append((task_name, config, call))
 
     # Collect results
-    for config, call in calls:
-        response = call.get()
-        print(f"[{config.model_name}] {response}")
+    for task_name, config, call in calls:
+        response = await call.get.aio()
+        print(f"[{task_name}] [{config.model_name}] {response}")
