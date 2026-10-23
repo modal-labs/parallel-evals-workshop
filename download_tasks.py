@@ -46,7 +46,9 @@ async def main():
         shutil.copy2(download.path / "instruction.md", target / "instruction.md")
         shutil.copy2(download.path / "task.toml", target / "task.toml")
         for directory in ("environment", "tests"):
-            shutil.copytree(download.path / directory, target / directory, dirs_exist_ok=True)
+            shutil.copytree(
+                download.path / directory, target / directory, dirs_exist_ok=True
+            )
         print(f"Downloaded {task_id.get_name()}")
 
 

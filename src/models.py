@@ -1,5 +1,7 @@
 from dataclasses import dataclass
+
 from agents import OpenAIChatCompletionsModel, OpenAIResponsesModel
+
 
 @dataclass
 class ModelConfig:
@@ -7,7 +9,8 @@ class ModelConfig:
     base_url: str
     api_key_env: str
     model_class: type[OpenAIResponsesModel | OpenAIChatCompletionsModel]
-    token_prices: tuple[float, float] # in/out per million
+    token_prices: tuple[float, float]  # in/out per million
+
 
 MODELS = [
     ModelConfig(
