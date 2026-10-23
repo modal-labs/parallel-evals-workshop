@@ -14,17 +14,17 @@ from agents import (
 )
 from openai import AsyncOpenAI
 
-from models import MODELS, ModelConfig
-from report import generate_report
-from sandbox import prepare_task, score_task
-from tasks import Task, load_tasks
+from src.models import MODELS, ModelConfig
+from src.report import generate_report
+from src.sandbox import prepare_task, score_task
+from src.tasks import Task, load_tasks
 
 app = modal.App("evals-workshop")
 
 harness_image = (
     modal.Image.debian_slim()
     .uv_pip_install("openai-agents")
-    .add_local_python_source("tasks", "sandbox", "report", "models")
+    .add_local_python_source("src")
 )
 
 # Set Modal Secrets with:

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import modal
 
-from tasks import Task
+from src.tasks import Task
 
 async def prepare_task(task: Task, app: modal.App):
     with tempfile.TemporaryDirectory() as directory:
