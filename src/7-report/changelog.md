@@ -1,0 +1,3 @@
+- Return agent runtime and token usage alongside each score.
+- Estimate token spend from per-model prices.
+- Generate three heatmaps with averages: score, time, and spend.

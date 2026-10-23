@@ -1,0 +1,3 @@
+- Move the agent into `agent.py`.
+- Create a fresh sandbox and expose bash as an agent tool.
+- Pass the sandbox through run context; terminate it in `finally`.

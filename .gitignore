@@ -5,6 +5,8 @@ build/
 dist/
 wheels/
 *.egg-info
+.ruff_cache/
+.pytest_cache/
 
 # Virtual environments
 .venv
@@ -12,8 +14,9 @@ wheels/
 # Env
 .env
 
-# Generated report
+# Generated reports and checkpoint artifacts
 report.png
+/src/*/artifacts/
 
 # Downloaded tasks
-/src/_tasks/
+/src/*/_tasks/

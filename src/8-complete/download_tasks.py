@@ -27,7 +27,7 @@ async def main():
             task_ids.append(task_id)
 
     downloads = await TaskClient().download_tasks(task_ids)
-    destination = Path(__file__).parent / "src" / "_tasks"
+    destination = Path(__file__).parent / "_tasks"
     for task_id, download in zip(task_ids, downloads.results):
         task = Task(download.path)
         verifier = task.config.verifier

@@ -1,0 +1,3 @@
+- Define a container image with the Agents SDK installed.
+- Inject `llm-secrets`; use `QWEN_API_KEY` for our shared endpoint.
+- Run a stateless, one-shot agent remotely and return its answer.

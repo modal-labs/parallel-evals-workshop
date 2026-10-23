@@ -1,8 +1,10 @@
+import matplotlib.pyplot as plt
+import pandas as pd
+import seaborn as sns
+from matplotlib.colors import LinearSegmentedColormap
+
+
 def generate_report(results: dict[str, list[dict]], model_names: list[str]):
-    import matplotlib.pyplot as plt
-    import pandas as pd
-    import seaborn as sns
-    from matplotlib.colors import LinearSegmentedColormap
 
     sns.set_theme(style="white", font_scale=1.05)
     colors = LinearSegmentedColormap.from_list(

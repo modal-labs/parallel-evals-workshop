@@ -1,0 +1,3 @@
+- `modal.App` groups our remote functions.
+- `@app.function()` runs Python on Modal.
+- A local entrypoint calls `.remote()` and receives the result.

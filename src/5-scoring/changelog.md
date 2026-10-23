@@ -1,0 +1,3 @@
+- Replace chat with `run_task`: prepare → solve → score.
+- Run the task’s test script and read its numeric reward.
+- Spawn tasks in parallel, collect scores, and spill large bash output to files.

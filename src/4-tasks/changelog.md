@@ -1,0 +1,3 @@
+- Define a task with `instruction.md`, `environment/Dockerfile`, and `tests/test.sh`.
+- Load hello-world through `tasks.py`; build its image and run its instruction.
+- Introduce the Terminal-Bench task format; verification comes next.

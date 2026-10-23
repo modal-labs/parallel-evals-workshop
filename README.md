@@ -1,18 +1,25 @@
-Run the eval sweep:
+Install dependencies once:
 
 ```sh
-uv run modal run src/main.py
+uv sync
 ```
 
-Add tasks under `src/tasks/<name>/` matching the format of `hello-world`:
+
+Add tasks under `src/8-complete/tasks/<name>/` matching the format of `hello-world`:
 - `instruction.md`
 - `environment/Dockerfile`
 - `tests/test.sh`.
 
-Download Terminal-Bench 2.0 tasks into the gitignored `src/_tasks/` directory:
 
 ```sh
-uv run download_tasks.py
+# Run the complete eval sweep:
+uv run modal run src/8-complete/main.py
+```
+
+Optionally download more task definitions (Terminal-Bench 2.0, via Harbor) into gitignored `src/8-complete/_tasks/` directory:
+
+```sh
+uv run src/8-complete/download_tasks.py
 # Or select task names:
-uv run download_tasks.py fix-code-vulnerability
+uv run src/8-complete/download_tasks.py fix-code-vulnerability
 ```

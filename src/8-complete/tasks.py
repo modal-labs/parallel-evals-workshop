@@ -1,3 +1,5 @@
+import io
+import tarfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -6,8 +8,8 @@ from pathlib import Path
 class Task:
     name: str
     instruction: str
-    dockerfile: str
-    test_script: str
+    environment: bytes
+    tests: bytes
 
 
 def load_tasks() -> list[Task]:
@@ -21,8 +23,15 @@ def load_tasks() -> list[Task]:
                 Task(
                     name=path.name,
                     instruction=(path / "instruction.md").read_text(),
-                    dockerfile=(path / "environment/Dockerfile").read_text(),
-                    test_script=(path / "tests/test.sh").read_text(),
+                    environment=bundle_directory(path / "environment"),
+                    tests=bundle_directory(path / "tests"),
                 )
             )
     return tasks
+
+
+def bundle_directory(path: Path) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        archive.add(path, arcname=".")
+    return buffer.getvalue()

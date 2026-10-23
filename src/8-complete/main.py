@@ -1,19 +1,18 @@
 from time import perf_counter
 
 import modal
+from agent import run_task_solver_agent
+from models import MODELS, ModelConfig
+from report import generate_report
+from sandbox import prepare_sandbox, score_task
+from tasks import Task, load_tasks
 
-from src.agent import solve_task
-from src.models import MODELS, ModelConfig
-from src.report import generate_report
-from src.sandbox import prepare_sandbox, score_task
-from src.tasks import Task, load_tasks
-
-app = modal.App("evals-workshop")
+app = modal.App("evals-workshop-8-task-downloader")
 
 harness_image = (
     modal.Image.debian_slim()
-    .uv_pip_install("openai-agents")
-    .add_local_python_source("src")
+    .uv_pip_install("openai-agents", "matplotlib", "seaborn")
+    .add_local_python_source("agent", "models", "sandbox", "tasks", "report")
 )
 
 # Set Modal Secrets with:
@@ -22,19 +21,19 @@ secrets = [modal.Secret.from_name("llm-secrets")]
 
 
 @app.function(secrets=secrets, image=harness_image, timeout=3600, scaledown_window=5)
-async def run_task(task: Task, config: ModelConfig):
+async def run_task(task: Task, model: ModelConfig):
     # Boot sandbox for task
     sandbox = await prepare_sandbox(task, app)
     try:
         # Time agent completion
         started = perf_counter()
-        usage = await solve_task(task, sandbox, config)
+        usage = await run_task_solver_agent(task, sandbox, model)
         seconds = perf_counter() - started
 
         # Calculate cost
         cost = None
-        if config.token_prices is not None:
-            input_price, output_price = config.token_prices
+        if model.token_prices is not None:
+            input_price, output_price = model.token_prices
             cost = (
                 usage.input_tokens * input_price + usage.output_tokens * output_price
             ) / 1_000_000
@@ -57,15 +56,15 @@ async def main():
 
     # Spawn every task/model pair before collecting results
     for task in tasks:
-        for config in MODELS:
-            call = await run_task.spawn.aio(task, config)
-            calls.append((task.name, config, call))
+        for model in MODELS:
+            call = await run_task.spawn.aio(task, model)
+            calls.append((task.name, model, call))
 
     # Collect results
     results = {task.name: [] for task in tasks}
-    for task_name, config, call in calls:
+    for task_name, model, call in calls:
         result = await call.get.aio()
         results[task_name].append(result)
-        print(f"[{task_name}] [{config.model_name}] {result}")
+        print(f"[{task_name}] [{model.model_name}] {result}")
 
-    generate_report(results, [config.model_name for config in MODELS])
+    generate_report(results, [model.model_name for model in MODELS])

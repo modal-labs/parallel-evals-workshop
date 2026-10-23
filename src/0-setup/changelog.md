@@ -1,0 +1,6 @@
+- Install uv, then run `uv sync` in the repo.
+- Authenticate your Modal account with `uv run modal setup`.
+- In Modal UI → Endpoints, select **Qwen3.8 27B**.
+- Create a **proxy token**; save its bearer value as `QWEN_API_KEY` in `.env`.
+- Deploy the endpoint, click **Test it**, and copy its URL for the agent.
+- Run `modal secret create --from-dotenv .env llm-secrets` to publish the credentials.

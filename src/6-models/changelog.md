@@ -1,0 +1,3 @@
+- Move endpoint, model, credentials, and SDK adapter into `models.py`.
+- Sweep every task/model pair with its own sandbox.
+- Print scores for OpenAI, Anthropic, and Qwen side by side.
